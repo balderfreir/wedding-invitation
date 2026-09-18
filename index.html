@@ -223,11 +223,10 @@
 </x-dc>
 <script type="text/x-dc" data-dc-script data-props="{&quot;dateLine&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;3 октября, 15:00&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;placeLine&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Турбаза «Раздолье», домик №7&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;weddingDate&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;2026-10-03T15:00:00+03:00&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Поведение&quot;},&quot;showCountdown&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Поведение&quot;},&quot;proxyUrl&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;https://wedding-rsvp.balderfreir.workers.dev/&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Отправка ответов&quot;},&quot;botToken&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Отправка ответов&quot;},&quot;chatId&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Отправка ответов&quot;}}">
 const UNITS = [["дней", 864e5], ["часов", 36e5], ["минут", 6e4], ["секунд", 1e3]];
-const STEPS = ["name", "attend", "guests", "drinks", "song"];
-const DRINKS = ["Вино", "Крепкое", "Без алкоголя"];
+const DRINKS = ["Вино", "Крепкое", "Сок, лимонад"];
 
 class Component extends DCLogic {
-  state = { now: Date.now(), step: 0, name: "", attend: "", guests: 2, drinks: [], song: "", sent: false, dir: 1, status: "idle", errorText: "" };
+  state = { now: Date.now(), step: 0, name: "", attend: "", guests: 1, people: [{ name: "", drink: "" }], song: "", sent: false, status: "idle", errorText: "" };
   dots = [];
   dotId = 0;
 
@@ -239,9 +238,7 @@ class Component extends DCLogic {
         this.raf = null;
         const x = e.clientX, y = e.clientY, now = Date.now();
         const last = this.dots[this.dots.length - 1];
-        if (!last || Math.hypot(x - last.x, y - last.y) > 16) {
-          this.dots.push({ id: ++this.dotId, x, y, born: now });
-        }
+        if (!last || Math.hypot(x - last.x, y - last.y) > 16) this.dots.push({ id: ++this.dotId, x, y, born: now });
         this.dots = this.dots.filter(d => now - d.born < 1000).slice(-22);
         this.setState({ cursor: now });
       });
@@ -260,10 +257,7 @@ class Component extends DCLogic {
   startWander() {
     const rnd = (a, b) => a + Math.random() * (b - a);
     this.blobs = Array.from(document.querySelectorAll("[data-bg-blob]")).map(el => ({
-      el,
-      x: rnd(-6, 6), y: rnd(-6, 6),
-      vx: rnd(-0.012, 0.012), vy: rnd(-0.008, 0.008),
-      range: rnd(9, 16)
+      el, x: rnd(-6, 6), y: rnd(-6, 6), vx: rnd(-0.012, 0.012), vy: rnd(-0.008, 0.008), range: rnd(9, 16)
     }));
     const tick = () => {
       for (const b of this.blobs) {
@@ -281,6 +275,35 @@ class Component extends DCLogic {
     if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) tick();
   }
 
+  steps() {
+    const s = this.state;
+    const list = [{ t: "name" }, { t: "attend" }];
+    if (s.attend === "no") return list;
+    if (s.attend === "" || s.attend === "yes") {
+      list.push({ t: "guests" });
+      list.push({ t: "drink", i: 0 });
+      for (let i = 1; i < s.guests; i++) {
+        list.push({ t: "gname", i: i });
+        list.push({ t: "drink", i: i });
+      }
+      list.push({ t: "song" });
+    }
+    return list;
+  }
+
+  person(i) {
+    return this.state.people[i] || { name: "", drink: "" };
+  }
+
+  setPerson(i, patch) {
+    this.setState(st => {
+      const people = st.people.slice();
+      while (people.length <= i) people.push({ name: "", drink: "" });
+      people[i] = Object.assign({}, people[i], patch);
+      return { people: people };
+    });
+  }
+
   async sendToBot(text) {
     const proxy = (this.props.proxyUrl || "").trim();
     const token = this.props.botToken, chat = this.props.chatId;
@@ -292,11 +315,7 @@ class Component extends DCLogic {
     try {
       const url = proxy || "https://api.telegram.org/bot" + token + "/sendMessage";
       const body = proxy ? { text: text } : { chat_id: chat, text: text, disable_web_page_preview: true };
-      const r = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await r.json().catch(() => ({ ok: r.ok }));
       if (!data.ok) throw new Error(data.description || "сервер ответил ошибкой");
       this.setState({ status: "ok" });
@@ -313,16 +332,17 @@ class Component extends DCLogic {
   }
 
   go(delta) {
-    const declined = this.state.attend === "no";
-    let step = this.state.step + delta;
-    if (declined && delta > 0) step = STEPS.length;
-    if (step >= STEPS.length) return this.setState({ sent: true });
-    this.setState({ step: Math.max(0, step), dir: delta, sent: false });
+    const total = this.steps().length;
+    const step = this.state.step + delta;
+    if (step >= total) return this.setState({ sent: true });
+    this.setState({ step: Math.max(0, step), sent: false });
   }
 
   renderVals() {
     const s = this.state;
-    const key = STEPS[s.step];
+    const steps = this.steps();
+    const cur = steps[Math.min(s.step, steps.length - 1)] || { t: "name" };
+    const declined = s.attend === "no";
     const target = new Date(this.props.weddingDate || "2026-10-03T15:00:00+03:00").getTime();
     let left = Math.max(0, target - s.now);
     const countdown = UNITS.map(([label, ms]) => {
@@ -330,51 +350,70 @@ class Component extends DCLogic {
       return { label, value };
     });
 
-    const declined = s.attend === "no";
-    const totalSteps = declined ? 2 : STEPS.length;
-    const questions = {
-      name: { q: "Как вас записать?", hint: "Имя и фамилия — чтобы подписать место за столом.", placeholder: "Например, Василиус Пупкинс" },
+    const mainName = s.name.trim();
+    const who = cur.t === "drink" && cur.i > 0 ? (this.person(cur.i).name.trim().split(" ")[0] || "") : "";
+
+    const q = {
+      name: { q: "Как вас записать?", hint: "Имя и фамилия — чтобы подписать место за столом.", ph: "Например, Василиус Пупкинс" },
       attend: { q: "Придёте?", hint: "Честный ответ лучше вежливого." },
-      guests: { q: "Сколько вас будет?", hint: "Считая вас — так мы посчитаем домики и стулья." },
-      drinks: { q: "Что налить?", hint: "Можно выбрать несколько или ничего." },
+      guests: { q: "Сколько вас будет?", hint: "Считая вас — спросим имя и напиток у каждого." },
+      drink: { q: cur.i === 0 ? "Что налить вам?" : (who ? who + " — что налить?" : "Что налить гостю " + (cur.i + 1) + "?"), hint: "Один вариант. Для детей — сок или лимонад." },
+      gname: { q: "Кто идёт с вами?", hint: "Имя " + (cur.i + 1) + "-го гостя — чтобы подписать и его место.", ph: "Например, Игорь" },
       song: { q: "Песня для плейлиста?", hint: "Та, под которую вы точно пойдёте танцевать." }
-    }[key] || { q: "", hint: "" };
+    }[cur.t] || { q: "", hint: "" };
 
-    const textValue = key === "name" ? s.name : key === "song" ? s.song : "";
-    const setText = e => this.setState(key === "name" ? { name: e.target.value } : { song: e.target.value });
+    const textValue = cur.t === "name" ? s.name : cur.t === "song" ? s.song : cur.t === "gname" ? this.person(cur.i).name : "";
+    const onText = e => {
+      const v = e.target.value;
+      if (cur.t === "name") this.setState({ name: v });
+      else if (cur.t === "song") this.setState({ song: v });
+      else this.setPerson(cur.i, { name: v });
+    };
 
-    const choices = key === "attend"
+    const choices = cur.t === "attend"
       ? [{ k: "yes", label: "Приду" }, { k: "no", label: "Не смогу" }].map(o => ({
-          label: o.label,
-          active: s.attend === o.k,
-          style: this.chipStyle(s.attend === o.k),
+          label: o.label, active: s.attend === o.k, style: this.chipStyle(s.attend === o.k),
           pick: () => this.setState({ attend: o.k })
         }))
-      : key === "drinks"
-        ? DRINKS.map(d => ({
-            label: d,
-            active: s.drinks.includes(d),
-            style: this.chipStyle(s.drinks.includes(d)),
-            pick: () => this.setState(st => ({
-              drinks: st.drinks.includes(d) ? st.drinks.filter(x => x !== d) : st.drinks.concat(d)
-            }))
-          }))
+      : cur.t === "drink"
+        ? DRINKS.map(d => {
+            const active = this.person(cur.i).drink === d;
+            return { label: d, active: active, style: this.chipStyle(active), pick: () => this.setPerson(cur.i, { drink: active ? "" : d }) };
+          })
         : [];
 
-    const blocked = (key === "name" && !s.name.trim()) || (key === "attend" && !s.attend);
+    const blocked = (cur.t === "name" && !mainName) || (cur.t === "attend" && !s.attend);
     const guestsWord = s.guests === 1 ? "гость" : s.guests < 5 ? "гостя" : "гостей";
 
-    const summary = declined
-      ? [{ k: "Гость", v: s.name || "—" }, { k: "Ответ", v: "Не смогу прийти" }]
-      : [
-          { k: "Гость", v: s.name || "—" },
-          { k: "Ответ", v: "Приду" },
-          { k: "Гостей", v: String(s.guests) },
-          { k: "Напитки", v: s.drinks.length ? s.drinks.join(", ") : "не важно" },
-          { k: "Песня", v: s.song || "на ваш выбор" }
-        ];
+    const roster = declined ? [] : Array.from({ length: s.guests }, (_, i) => {
+      const p = this.person(i);
+      const nm = i === 0 ? (mainName || "—") : (p.name.trim() || "—");
+      return { k: i === 0 ? "Вы" : "Гость " + (i + 1), v: nm + (p.drink ? " · " + p.drink : "") };
+    });
 
-    const msg = "Свадьба Эльзы и Вячеслава, 3 октября. " + summary.map(r => r.k + ": " + r.v).join(". ") + ".";
+    const liveCard = declined
+      ? [{ k: "Гость", v: mainName || "—" }, { k: "Ответ", v: "Не смогу" }]
+      : [
+          { k: "Ответ", v: s.attend === "yes" ? "Приду" : "—" },
+          { k: "Гостей", v: s.attend === "yes" ? String(s.guests) : "—" }
+        ].concat(roster, [{ k: "Песня", v: s.song.trim() || "—" }]);
+
+    const msg = declined
+      ? ["НЕ ПРИДЁТ", "", (mainName || "Гость"), "", "— — —", "Свадьба 3 октября, «Раздолье»"].join("\n")
+      : [
+          "НОВЫЙ ОТВЕТ",
+          "",
+          "Гостей: " + s.guests,
+          ""
+        ].concat(
+          roster.map((r, i) => (i === 0 ? mainName : this.person(i).name.trim() || "без имени") + " — " + (this.person(i).drink || "напиток не выбран"))
+        ).concat([
+          "",
+          "Песня: " + (s.song.trim() || "на ваш выбор"),
+          "",
+          "— — —",
+          "Свадьба 3 октября, «Раздолье», домик №7"
+        ]).join("\n");
 
     return {
       dateLine: this.props.dateLine ?? "3 октября, 15:00",
@@ -387,31 +426,25 @@ class Component extends DCLogic {
         style: "position: absolute; left: " + d.x + "px; top: " + d.y + "px; width: 64px; height: 64px; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, #d2cefd 12%, transparent), transparent 72%); filter: blur(5px); animation: noct-trail .7s ease-out forwards;"
       })),
 
-      liveCard: [
-        { k: "Гость", v: s.name.trim() || "—" },
-        { k: "Ответ", v: s.attend === "yes" ? "Приду" : s.attend === "no" ? "Не смогу" : "—" },
-        { k: "Гостей", v: declined ? "—" : s.step > 2 || s.sent ? String(s.guests) : "—" },
-        { k: "Напитки", v: declined ? "—" : s.drinks.length ? s.drinks.join(", ") : "—" },
-        { k: "Песня", v: declined ? "—" : s.song.trim() || "—" }
-      ].map(r => ({ k: r.k, v: r.v, style: r.v === "—" ? "color: var(--color-neutral-700);" : "color: var(--color-text);" })),
+      liveCard: liveCard.map(r => ({ k: r.k, v: r.v, style: r.v === "—" ? "color: var(--color-neutral-700);" : "color: var(--color-text);" })),
       cardNote: s.sent
         ? (s.status === "ok" ? "Это мы получили — ничего менять не нужно." : "Проверьте и отправьте — придёт нам в Telegram именно в таком виде.")
         : "Заполняется по ходу ответов — именно это придёт нам в Telegram.",
+
       inProgress: !s.sent,
       sent: s.sent,
-      stepLabel: "Шаг " + Math.min(s.step + 1, totalSteps) + " из " + totalSteps,
-      progress: STEPS.slice(0, totalSteps).map((_, i) => ({
+      stepLabel: s.attend === "" ? "Шаг " + (s.step + 1) : "Шаг " + Math.min(s.step + 1, steps.length) + " из " + steps.length,
+      progress: steps.map((_, i) => ({
         style: "width: " + (i === s.step ? "22px" : "8px") + "; height: 4px; border-radius: 2px; transition: width .3s ease, background .3s ease; background: " + (i < s.step ? "var(--o-mid)" : i === s.step ? "var(--o)" : "var(--color-neutral-800)") + ";"
       })),
       stepAnim: "animation: noct-rise .38s ease both;",
-      question: questions.q,
-      hint: questions.hint,
-      placeholder: questions.placeholder || "",
-      atText: key === "name" || key === "song",
-      atChoice: key === "attend" || key === "drinks",
-      atGuests: key === "guests",
-      textValue,
-      onText: setText,
+      question: q.q,
+      hint: q.hint,
+      placeholder: q.ph || "",
+      atText: cur.t === "name" || cur.t === "song" || cur.t === "gname",
+      atChoice: cur.t === "attend" || cur.t === "drink",
+      atGuests: cur.t === "guests",
+      textValue, onText,
       onKey: e => { if (e.key === "Enter") { e.preventDefault(); if (!blocked) this.go(1); } },
       choices,
       guests: s.guests,
@@ -419,18 +452,17 @@ class Component extends DCLogic {
       guestsMinus: () => this.setState(st => ({ guests: Math.max(1, st.guests - 1) })),
       guestsPlus: () => this.setState(st => ({ guests: Math.min(8, st.guests + 1) })),
       nextBlocked: blocked,
-      nextLabel: s.step >= totalSteps - 1 ? "Готово" : declined ? "Готово" : "Дальше",
+      nextLabel: s.attend !== "" && s.step >= steps.length - 1 ? "Готово" : "Дальше",
       next: () => this.go(1),
       back: () => this.go(-1),
       canGoBack: s.step > 0,
-      skippable: key === "drinks" || key === "song",
+      skippable: cur.t === "drink" || cur.t === "song",
       skip: () => this.go(1),
 
       doneTitle: declined ? "Жаль!" : "Записали!",
       sentNote: declined
         ? "Будем скучать. Пришлём фотографии — чтобы вы немного пожалели."
-        : "Ждём у домика №7 третьего октября. Отправьте ответ нам в Telegram, чтобы он точно не потерялся.",
-      summary,
+        : "Ждём у домика №7 третьего октября. Осталось отправить ответ — иначе мы его не увидим.",
       sendToBot: () => this.sendToBot(msg),
       sendDisabled: s.status === "sending" || s.status === "ok",
       sendStyle: "white-space: nowrap; flex: 0 0 auto; min-height: 48px; padding-left: 18px; padding-right: 18px;"
